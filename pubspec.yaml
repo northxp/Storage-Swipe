@@ -1,0 +1,54 @@
+name: storage_swipe
+description: >
+  A gamified, Tinder-style swipe interface for clearing local device storage.
+  Swipe right to keep a photo, swipe left to queue it for deletion, then
+  empty the trash to reclaim space — all backed by an MVVM architecture.
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # --- State Management ------------------------------------------------
+  # Riverpod is our single source of truth for app state (the "ViewModel"
+  # layer in our MVVM setup). We use flutter_riverpod (not just riverpod)
+  # because we need ConsumerWidget/ConsumerStatefulWidget bindings.
+  flutter_riverpod: ^2.5.1
+
+  # --- Native Storage Access --------------------------------------------
+  # photo_manager talks to the native iOS Photos framework / Android
+  # MediaStore. It gives us paginated asset queries AND native deletion,
+  # so we never have to write platform channel code by hand.
+  photo_manager: ^3.12.0
+
+  # permission_handler is used for the parts of the permission dance that
+  # photo_manager doesn't own outright (e.g. checking Android storage
+  # permissions on older API levels, notifications for background work).
+  permission_handler: ^11.3.1
+
+  # --- UI / Swipe Physics -------------------------------------------------
+  # flutter_card_swiper gives us the Tinder-style stacked-card gesture
+  # detector, fling physics, and a controller we can drive programmatically
+  # from our action buttons (so "Delete" button == swiping left).
+  flutter_card_swiper: ^7.0.2
+
+  # --- Networking (for the semantic search API stub) ----------------------
+  # A minimal, dependency-light HTTP client is enough for our stub layer.
+  # Swap for `dio` later if we need interceptors/retry policies for the
+  # FAISS-backed backend.
+  http: ^1.2.2
+
+  cupertino_icons: ^1.0.8
+  photo_manager_image_provider: ^2.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
