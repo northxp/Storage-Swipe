@@ -7,7 +7,8 @@
 // happens on swipe, doesn't touch providers, and doesn't call any
 // service. That decision-making lives entirely in `swipe_provider.dart`
 // and is wired up by `swipe_screen.dart`.
-import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import '../../core/theme.dart';
@@ -29,27 +30,38 @@ class PhotoCard extends StatelessWidget {
           // efficiently loading a right-sized thumbnail/preview straight
           // from the native photo library — we never decode full-
           // resolution images just to show them in a swipe stack.
-          AssetEntityImage(
-            asset.entity,
-            isOriginal: false,
-            thumbnailSize: const ThumbnailSize.square(1080),
-            fit: BoxFit.cover,
-            loadingBuilder: (context, child, event) {
-              if (event == null) return child;
-              return Container(
-                color: AppColors.surface,
-                child: const Center(
-                  child: CircularProgressIndicator(color: AppColors.primary),
-                ),
-              );
-            },
-            errorBuilder: (context, error, stack) => Container(
-              color: AppColors.surface,
-              child: const Center(
-                child: Icon(Icons.broken_image_outlined,
-                    color: AppColors.textSecondary, size: 48),
-              ),
+          FutureBuilder<Uint8List?>(
+            future: asset.entity.thumbnailDataWithSize(
+              const ThumbnailSize.square(1080),
             ),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState != ConnectionState.done) {
+                return Container(
+                  color: AppColors.surface,
+                  child: const Center(
+                    child: CircularProgressIndicator(
+                      color: AppColors.primary,
+                    ),
+                  ),
+                );
+              }
+
+              final bytes = snapshot.data;
+              if (bytes == null) {
+                return Container(
+                  color: AppColors.surface,
+                  child: const Center(
+                    child: Icon(
+                      Icons.broken_image_outlined,
+                      color: AppColors.textSecondary,
+                      size: 48,
+                    ),
+                  ),
+                );
+              }
+
+              return Image.memory(bytes, fit: BoxFit.cover);
+            },
           ),
 
           // A bottom gradient scrim + file-size chip. Showing the file

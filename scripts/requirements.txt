@@ -1,0 +1,19 @@
+# scripts/requirements.txt
+#
+# Install these INTO the ml-mobileclip repo's own environment (its
+# `pip install -e .` already pulls in torch + the mobileclip package
+# itself) — this file only lists what export_mobileclip_onnx.py needs
+# on top of that.
+#
+#   git clone https://github.com/apple/ml-mobileclip.git
+#   cd ml-mobileclip
+#   conda create -n mobileclip-export python=3.10 -y
+#   conda activate mobileclip-export
+#   pip install -e .
+#   pip install -r requirements.txt   # (this file)
+
+onnx>=1.16
+onnxruntime>=1.18
+onnxconverter-common>=1.14
+numpy
+pillow

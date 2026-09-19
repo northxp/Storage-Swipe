@@ -1,34 +1,61 @@
 // lib/data/services/semantic_search_api.dart
 //
-// DATA LAYER — SERVICE (REMOTE / API STUB)
+// DATA LAYER — SERVICE (REMOTE / API CLIENT)
 // ------------------------------------------
-// This service is the client-side half of a planned backend integration.
-// It is NOT wired into the swipe flow yet — it's scaffolding so that when
-// the Python backend exists, we only need to (a) point `baseUrl` at it and
-// (b) start calling these methods from `swipe_provider.dart`. No UI or
-// state-layer refactor should be required.
+// This service is the client-side half of the semantic search backend.
+// It's usable today — `SwipeScreen`'s search bar and `SwipeController`
+// already call into it — but `baseUrl` still points at a placeholder
+// until you deploy the actual FastAPI service, so `semanticFilter()`
+// fails soft (empty results) rather than erroring.
 //
 // -----------------------------------------------------------------------
-// PLANNED BACKEND ARCHITECTURE (see README.md "Backend Vision" for more):
+// ARCHITECTURE — AND A CORRECTION FROM AN EARLIER VERSION OF THIS FILE:
 //
-//   Flutter app  --(1) upload embeddings request)-->  FastAPI
-//                                                         |
-//                                                         v
-//                                          SentenceTransformers model
-//                                          encodes photo captions/tags
-//                                          into vector embeddings
-//                                                         |
-//                                                         v
-//                                                FAISS vector index
-//                                          (stores + searches embeddings)
+// An earlier version of this pipeline planned to caption each photo,
+// embed the caption with SentenceTransformers, and match search queries
+// against those caption embeddings. That's a workable design on its
+// own, but it stops being consistent once you bring in MobileCLIP for
+// on-device image embedding (see `embedding_worker.dart`): MobileCLIP's
+// image and text encoders share ONE joint embedding space by
+// construction, so a photo's MobileCLIP embedding and a query's
+// MobileCLIP embedding are directly comparable — no caption, and no
+// SentenceTransformers, needed in between. Mixing the two (MobileCLIP
+// image vectors vs. SentenceTransformers query vectors) would not error;
+// it would just silently return meaningless similarity scores, since
+// they're different vector spaces.
 //
-//   Flutter app  --(2) semantic query, e.g. "mountain treks")-->  FastAPI
-//                                                         |
-//                                    FAISS similarity search over index
-//                                                         |
-//   Flutter app  <--(matching asset IDs, ranked by similarity)--------
+// This file now reflects the MobileCLIP-consistent design:
 //
-// The two methods below map directly onto steps (1) and (2).
+//   Flutter App                              FastAPI Backend
+//   ────────────                             ────────────────
+//   On-device (embedding_worker.dart):
+//     MobileCLIP image encoder (ONNX)
+//     embeds each photo thumbnail
+//              │
+//              ▼
+//   uploadEmbedding(assetId, vector)  ─────▶  FAISS index
+//                                             (upsert vector, keyed
+//                                              by asset_id — no image
+//                                              bytes ever sent)
+//
+//   semanticFilter("mountain treks")  ─────▶  FastAPI embeds the query
+//                                             with MobileCLIP's TEXT
+//                                             tower (plain PyTorch,
+//                                             server-side — no mobile
+//                                             constraints apply there),
+//                                             then runs a FAISS
+//                                             nearest-neighbor search
+//                                             over the SAME space the
+//                                             image vectors live in
+//                                                       │
+//   Flutter App  ◀── ranked [{asset_id, score}, ...] ──┘
+//
+// `uploadAssetMetadata` (the original caption-based path) is kept below,
+// clearly marked as an ALTERNATIVE rather than deleted — it's still a
+// reasonable design if you'd rather not run any model on-device at all
+// and are fine with captioning being the bottleneck on search quality.
+// Use one path consistently; don't upload photos via one and query via
+// the other.
 // -----------------------------------------------------------------------
 
 import 'dart:convert';
@@ -70,28 +97,47 @@ class SemanticSearchApi {
 
   final http.Client _client;
 
-  /// STEP 1 — Upload metadata for embedding + indexing.
+  /// PRIMARY PATH — upload an already-computed MobileCLIP image
+  /// embedding for one photo.
   ///
-  /// Sends lightweight metadata (never raw image bytes, to keep payloads
-  /// small and avoid shipping a user's photos to a server just to index
-  /// them) that the backend can turn into a caption via an on-device or
-  /// server-side image-captioning step, then embed with
-  /// SentenceTransformers, then upsert into the FAISS index.
-  ///
-  /// [assetId] ties the embedding back to a local `photo_manager` asset.
-  /// [caption] is an optional pre-computed description (e.g. from an
-  /// on-device ML Kit label) — if omitted, the backend is expected to
-  /// generate one itself from an uploaded thumbnail (future work).
+  /// This is what `EmbeddingIndexer` (in `embedding_worker.dart`) calls
+  /// after running the on-device ONNX model on a photo's thumbnail.
+  /// [embedding] must already be L2-normalized (the exported model does
+  /// this internally — see `export_mobileclip_onnx.py`'s
+  /// `ImageEncoderWrapper`) and must be in the SAME dimensionality your
+  /// FAISS index was built with (512 for most MobileCLIP variants).
+  Future<void> uploadEmbedding({
+    required String assetId,
+    required List<double> embedding,
+  }) async {
+    final uri = Uri.parse('$baseUrl/v1/embeddings/upsert_vector');
+    try {
+      await _client.post(
+        uri,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'asset_id': assetId,
+          'embedding': embedding,
+        }),
+      );
+    } catch (_) {
+      // Best-effort background sync — a photo that fails to upload just
+      // won't be searchable yet; it never surfaces as a user-facing
+      // error (see `EmbeddingIndexer.indexBatch`'s catch-all).
+    }
+  }
+
+  /// ALTERNATIVE PATH — caption-then-embed, for a backend that does NOT
+  /// use MobileCLIP on-device and instead relies on SentenceTransformers
+  /// over generated captions. Kept for reference; do not call this AND
+  /// `uploadEmbedding` for the same deployment — pick one embedding
+  /// space and query it consistently.
   Future<void> uploadAssetMetadata({
     required String assetId,
     String? caption,
     DateTime? capturedAt,
   }) async {
-    final uri = Uri.parse('$baseUrl/v1/embeddings/upsert');
-
-    // NOTE: This is a stub. Until the backend exists, this call is not
-    // invoked anywhere in the app — it's here so the contract (endpoint
-    // shape, payload keys) is documented and ready to flip on.
+    final uri = Uri.parse('$baseUrl/v1/embeddings/upsert_caption');
     await _client.post(
       uri,
       headers: {'Content-Type': 'application/json'},
@@ -103,7 +149,7 @@ class SemanticSearchApi {
     );
   }
 
-  /// STEP 2 — Semantic query against the FAISS index.
+  /// Semantic query against the FAISS index.
   ///
   /// Example: `semanticFilter("mountain treks")` should return the asset
   /// IDs of photos whose embeddings are nearest-neighbors to the query's

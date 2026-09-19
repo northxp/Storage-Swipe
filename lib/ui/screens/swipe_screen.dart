@@ -4,11 +4,12 @@
 // ---------------------------
 // The "V" in MVVM. This widget is intentionally "dumb": it watches
 // `swipeControllerProvider` for data, renders it, and forwards user
-// gestures back to the controller as intents (`keep`, `markForDeletion`).
-// It contains ZERO business logic — no sorting, no size math, no native
-// calls. If you find yourself writing an `if` statement here that decides
-// *what happens* to a photo (rather than *how it looks*), that logic
-// belongs in `state/swipe_provider.dart` instead.
+// gestures back to the controller as intents (`keep`, `markForDeletion`,
+// `reviewKeptPhotos`, `applySemanticFilter`, `refreshLibrary`). It
+// contains ZERO business logic — no sorting, no size math, no native
+// calls, no filtering. If you find yourself writing an `if` statement
+// here that decides *what happens* to a photo (rather than *how it
+// looks*), that logic belongs in `state/swipe_provider.dart` instead.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_card_swiper/flutter_card_swiper.dart';
@@ -34,8 +35,10 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
   // to animate a card off-screen in a direction. That's a UI concern, so
   // it lives here rather than in `SwipeController`.
   final CardSwiperController _cardController = CardSwiperController();
+  final TextEditingController _searchController = TextEditingController();
 
   GalleryAccessResult? _permissionResult;
+  bool _searchExpanded = false;
 
   @override
   void initState() {
@@ -51,7 +54,19 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
   @override
   void dispose() {
     _cardController.dispose();
+    _searchController.dispose();
     super.dispose();
+  }
+
+  void _submitSearch() {
+    final query = _searchController.text;
+    ref.read(swipeControllerProvider.notifier).applySemanticFilter(query);
+  }
+
+  void _clearSearch() {
+    _searchController.clear();
+    setState(() => _searchExpanded = false);
+    ref.read(swipeControllerProvider.notifier).clearSemanticFilter();
   }
 
   @override
@@ -68,9 +83,25 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Swipe & Clear'),
+        title: Text(_searchExpanded ? '' : 'Swipe & Clear'),
         actions: [
-          _TrashIconButton(trashCount: swipeState.trashBuffer.length),
+          if (!_searchExpanded)
+            IconButton(
+              icon: const Icon(Icons.search),
+              tooltip: 'Search by description (e.g. "mountain treks")',
+              onPressed: () => setState(() => _searchExpanded = true),
+            ),
+          if (_searchExpanded)
+            Expanded(
+              child: _SemanticSearchField(
+                controller: _searchController,
+                isSearching: swipeState.isSearching,
+                onSubmitted: (_) => _submitSearch(),
+                onClear: _clearSearch,
+              ),
+            ),
+          if (!_searchExpanded)
+            _TrashIconButton(trashCount: swipeState.trashBuffer.length),
         ],
       ),
       body: SafeArea(
@@ -80,14 +111,20 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
               kept: swipeState.keptCount,
               trashed: swipeState.trashBuffer.length,
               total: swipeState.totalAssetCount,
+              isReviewMode: swipeState.isReviewMode,
+              semanticQuery: swipeState.semanticQuery,
+              onClearFilter: _clearSearch,
             ),
+            if (swipeState.errorMessage != null)
+              _InlineBanner(message: swipeState.errorMessage!),
             Expanded(
               child: _buildCardArea(context, swipeState),
             ),
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 24),
-              child: ActionButtons(controller: _cardController),
-            ),
+            if (!swipeState.isLibraryEmpty && swipeState.pendingQueue.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: ActionButtons(controller: _cardController),
+              ),
           ],
         ),
       ),
@@ -95,13 +132,46 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
   }
 
   Widget _buildCardArea(BuildContext context, SwipeState swipeState) {
+    // Case 1: the device gallery has never had anything to show at all —
+    // distinct from having reviewed everything (see `isLibraryEmpty`'s
+    // docs on `SwipeState`).
+    if (swipeState.isLibraryEmpty) {
+      return _EmptyLibraryView(
+        onRecheck: () => ref.read(swipeControllerProvider.notifier).refreshLibrary(),
+        onGoToTrash: () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const TrashScreen()),
+        ),
+      );
+    }
+
     if (swipeState.pendingQueue.isEmpty) {
       if (swipeState.isLoadingBatch) {
-        return const _CenteredMessage(child: CircularProgressIndicator());
+        return const _InlineCenteredMessage(child: CircularProgressIndicator());
       }
-      if (!swipeState.hasMore) {
-        return const _CenteredMessage(
-          child: _AllDoneMessage(),
+
+      // Case 2: a semantic filter is active but matched nothing that's
+      // currently loaded.
+      if (swipeState.semanticQuery != null) {
+        return _NoSearchResultsView(
+          query: swipeState.semanticQuery!,
+          onClear: _clearSearch,
+        );
+      }
+
+      // Case 3: the queue (original pass or review pass) is fully
+      // exhausted — the "All Caught Up!" celebratory state.
+      if (swipeState.isQueueExhausted) {
+        return _AllCaughtUpView(
+          isReviewMode: swipeState.isReviewMode,
+          canReviewKeptPhotos:
+              ref.read(swipeControllerProvider.notifier).canReviewKeptPhotos,
+          onReviewKept: () =>
+              ref.read(swipeControllerProvider.notifier).reviewKeptPhotos(),
+          onRecheck: () =>
+              ref.read(swipeControllerProvider.notifier).refreshLibrary(),
+          onGoToTrash: () => Navigator.of(context).push(
+            MaterialPageRoute(builder: (_) => const TrashScreen()),
+          ),
         );
       }
     }
@@ -109,6 +179,11 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
       child: CardSwiper(
+        key: ValueKey(swipeState.isReviewMode), // reset swiper state cleanly
+                                                  // when entering/leaving a
+                                                  // review pass, since the
+                                                  // underlying data source
+                                                  // changes identity.
         controller: _cardController,
         cardsCount: swipeState.pendingQueue.length,
         // Keeping a couple of cards stacked behind the top one is purely
@@ -144,41 +219,151 @@ class _SwipeScreenState extends ConsumerState<SwipeScreen> {
   }
 }
 
+// ---------------------------------------------------------------------
+// SEMANTIC SEARCH BAR
+// ---------------------------------------------------------------------
+
+class _SemanticSearchField extends StatelessWidget {
+  const _SemanticSearchField({
+    required this.controller,
+    required this.isSearching,
+    required this.onSubmitted,
+    required this.onClear,
+  });
+
+  final TextEditingController controller;
+  final bool isSearching;
+  final ValueChanged<String> onSubmitted;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: controller,
+      autofocus: true,
+      style: const TextStyle(color: AppColors.textPrimary),
+      textInputAction: TextInputAction.search,
+      onSubmitted: onSubmitted,
+      decoration: InputDecoration(
+        hintText: 'Try "mountain treks"…',
+        hintStyle: const TextStyle(color: AppColors.textSecondary),
+        border: InputBorder.none,
+        suffixIcon: isSearching
+            ? const Padding(
+                padding: EdgeInsets.all(12),
+                child: SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              )
+            : IconButton(
+                icon: const Icon(Icons.close, color: AppColors.textSecondary),
+                onPressed: onClear,
+              ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------
+// PROGRESS HEADER
+// ---------------------------------------------------------------------
+
 class _ProgressHeader extends StatelessWidget {
   const _ProgressHeader({
     required this.kept,
     required this.trashed,
     required this.total,
+    required this.isReviewMode,
+    required this.semanticQuery,
+    required this.onClearFilter,
   });
 
   final int kept;
   final int trashed;
   final int total;
+  final bool isReviewMode;
+  final String? semanticQuery;
+  final VoidCallback onClearFilter;
 
   @override
   Widget build(BuildContext context) {
     final reviewed = kept + trashed;
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            total > 0 ? '$reviewed of $total reviewed' : 'Loading library…',
-            style: const TextStyle(color: AppColors.textSecondary),
-          ),
           Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Icon(Icons.favorite, color: AppColors.keep, size: 16),
-              const SizedBox(width: 4),
-              Text('$kept', style: const TextStyle(color: AppColors.keep)),
-              const SizedBox(width: 16),
-              const Icon(Icons.delete, color: AppColors.delete, size: 16),
-              const SizedBox(width: 4),
-              Text('$trashed', style: const TextStyle(color: AppColors.delete)),
+              Text(
+                total > 0 ? '$reviewed of $total reviewed' : 'Loading library…',
+                style: const TextStyle(color: AppColors.textSecondary),
+              ),
+              Row(
+                children: [
+                  const Icon(Icons.favorite, color: AppColors.keep, size: 16),
+                  const SizedBox(width: 4),
+                  Text('$kept', style: const TextStyle(color: AppColors.keep)),
+                  const SizedBox(width: 16),
+                  const Icon(Icons.delete, color: AppColors.delete, size: 16),
+                  const SizedBox(width: 4),
+                  Text('$trashed',
+                      style: const TextStyle(color: AppColors.delete)),
+                ],
+              ),
             ],
           ),
+          if (isReviewMode || semanticQuery != null) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: [
+                if (isReviewMode)
+                  const Chip(
+                    avatar: Icon(Icons.replay, size: 16, color: Colors.white),
+                    label: Text('Reviewing kept photos'),
+                    backgroundColor: AppColors.primary,
+                    labelStyle: TextStyle(color: Colors.white, fontSize: 12),
+                  ),
+                if (semanticQuery != null)
+                  Chip(
+                    avatar: const Icon(Icons.filter_alt, size: 16, color: Colors.white),
+                    label: Text('"$semanticQuery"'),
+                    backgroundColor: AppColors.primary,
+                    labelStyle: const TextStyle(color: Colors.white, fontSize: 12),
+                    deleteIcon: const Icon(Icons.close, size: 16, color: Colors.white),
+                    onDeleted: onClearFilter,
+                  ),
+              ],
+            ),
+          ],
         ],
+      ),
+    );
+  }
+}
+
+class _InlineBanner extends StatelessWidget {
+  const _InlineBanner({required this.message});
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(20, 4, 20, 0),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppColors.textSecondary.withOpacity(0.3)),
+      ),
+      child: Text(
+        message,
+        style: const TextStyle(color: AppColors.textSecondary, fontSize: 12),
       ),
     );
   }
@@ -226,32 +411,184 @@ class _TrashIconButton extends StatelessWidget {
   }
 }
 
-class _AllDoneMessage extends StatelessWidget {
-  const _AllDoneMessage();
+// ---------------------------------------------------------------------
+// EMPTY / TERMINAL STATES
+// ---------------------------------------------------------------------
+
+/// Shown when the device gallery genuinely has zero photos (or the very
+/// first page fetch came back empty). Distinct from "you've reviewed
+/// everything" — see `SwipeState.isLibraryEmpty`.
+class _EmptyLibraryView extends StatelessWidget {
+  const _EmptyLibraryView({required this.onRecheck, required this.onGoToTrash});
+
+  final VoidCallback onRecheck;
+  final VoidCallback onGoToTrash;
 
   @override
   Widget build(BuildContext context) {
-    return const Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(Icons.celebration, color: AppColors.primary, size: 64),
-        SizedBox(height: 16),
-        Text(
-          "You've reviewed your entire library!",
-          style: TextStyle(color: AppColors.textPrimary, fontSize: 18),
-          textAlign: TextAlign.center,
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.image_not_supported_outlined,
+                color: AppColors.textSecondary, size: 72),
+            const SizedBox(height: 20),
+            const Text(
+              "No photos found",
+              style: TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              "Your gallery looks empty from here — nothing to swipe "
+              "through just yet.",
+              textAlign: TextAlign.center,
+              style: TextStyle(color: AppColors.textSecondary),
+            ),
+            const SizedBox(height: 24),
+            ElevatedButton.icon(
+              onPressed: onRecheck,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Recheck Gallery'),
+            ),
+            TextButton(
+              onPressed: onGoToTrash,
+              child: const Text('Go to Trash'),
+            ),
+          ],
         ),
-        SizedBox(height: 8),
-        Text(
-          "Don't forget to empty your trash to reclaim space.",
-          style: TextStyle(color: AppColors.textSecondary),
-          textAlign: TextAlign.center,
-        ),
-      ],
+      ),
     );
   }
 }
 
+/// Shown once the active queue (original pass or a review pass) has been
+/// fully swiped through — the "All Caught Up!" celebratory state, with a
+/// path into a second "Review Kept Photos" pass.
+class _AllCaughtUpView extends StatelessWidget {
+  const _AllCaughtUpView({
+    required this.isReviewMode,
+    required this.canReviewKeptPhotos,
+    required this.onReviewKept,
+    required this.onRecheck,
+    required this.onGoToTrash,
+  });
+
+  final bool isReviewMode;
+  final bool canReviewKeptPhotos;
+  final VoidCallback onReviewKept;
+  final VoidCallback onRecheck;
+  final VoidCallback onGoToTrash;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.celebration, color: AppColors.primary, size: 64),
+            const SizedBox(height: 16),
+            Text(
+              isReviewMode
+                  ? "Second pass complete!"
+                  : "All Caught Up!",
+              style: const TextStyle(
+                color: AppColors.textPrimary,
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              "Don't forget to empty your trash to reclaim space.",
+              style: TextStyle(color: AppColors.textSecondary),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            if (canReviewKeptPhotos)
+              ElevatedButton.icon(
+                onPressed: onReviewKept,
+                icon: const Icon(Icons.replay),
+                label: const Text('Review Kept Photos'),
+              ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: onRecheck,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Check for New Photos'),
+            ),
+            TextButton(
+              onPressed: onGoToTrash,
+              child: const Text('Go to Trash'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Shown when a semantic filter is active but nothing currently loaded
+/// matches it.
+class _NoSearchResultsView extends StatelessWidget {
+  const _NoSearchResultsView({required this.query, required this.onClear});
+
+  final String query;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.search_off, color: AppColors.textSecondary, size: 56),
+            const SizedBox(height: 16),
+            Text(
+              'No photos matching "$query" are loaded right now.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: AppColors.textPrimary),
+            ),
+            const SizedBox(height: 16),
+            TextButton(onPressed: onClear, child: const Text('Clear Search')),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A centered message used INSIDE the existing Scaffold's body (e.g.
+/// while a batch is loading mid-session) — no nested Scaffold, so it
+/// doesn't paint over the app bar or bottom action buttons.
+class _InlineCenteredMessage extends StatelessWidget {
+  const _InlineCenteredMessage({required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: child,
+      ),
+    );
+  }
+}
+
+/// A full-screen centered message with its OWN Scaffold — used only for
+/// states that replace the entire screen (e.g. "checking permission…"
+/// before the main Scaffold has even been built).
 class _CenteredMessage extends StatelessWidget {
   const _CenteredMessage({required this.child});
   final Widget child;
