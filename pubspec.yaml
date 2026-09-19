@@ -23,7 +23,10 @@ dependencies:
   # photo_manager talks to the native iOS Photos framework / Android
   # MediaStore. It gives us paginated asset queries AND native deletion,
   # so we never have to write platform channel code by hand.
-  photo_manager: ^3.12.0
+  photo_manager: ^3.2.4
+  
+  # separated from the core photo_manager package to provide AssetEntityImage
+  photo_manager_image_provider: ^2.2.0 
 
   # permission_handler is used for the parts of the permission dance that
   # photo_manager doesn't own outright (e.g. checking Android storage
@@ -36,14 +39,25 @@ dependencies:
   # from our action buttons (so "Delete" button == swiping left).
   flutter_card_swiper: ^7.0.2
 
-  # --- Networking (for the semantic search API stub) ----------------------
-  # A minimal, dependency-light HTTP client is enough for our stub layer.
+  # --- Networking (for the semantic search API) ---------------------------
+  # A minimal, dependency-light HTTP client is enough for our API client.
   # Swap for `dio` later if we need interceptors/retry policies for the
   # FAISS-backed backend.
   http: ^1.2.2
 
+  # --- On-device ML (semantic search image embeddings) ---------------------
+  # Runs the exported MobileCLIP ONNX image encoder on-device. See
+  # `lib/data/services/embedding_worker.dart` and
+  # `scripts/export_mobileclip_onnx.py` for the full pipeline this powers.
+  flutter_onnxruntime: ^1.8.1
+
+  # Used ONLY inside the embedding worker isolate to decode a JPEG
+  # thumbnail and resize/normalize it into the tensor MobileCLIP expects
+  # — a pure-Dart image codec with no platform channel of its own, so it
+  # works fine off the main isolate.
+  image: ^4.3.0
+
   cupertino_icons: ^1.0.8
-  photo_manager_image_provider: ^2.2.0
 
 dev_dependencies:
   flutter_test:
@@ -52,3 +66,12 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  # The exported MobileCLIP ONNX model is NOT checked into this repo (it's
+  # a multi-megabyte binary derived from Apple's released weights under
+  # their own license — see `scripts/export_mobileclip_onnx.py`). Run
+  # that script yourself, drop the resulting .onnx file at this exact
+  # path, then uncomment the block below.
+  #
+  # assets:
+  #   - assets/models/mobileclip_s0_image_encoder_fp16.onnx

@@ -97,6 +97,17 @@ class GalleryService {
     return album.assetCountAsync;
   }
 
+  /// Clears the cached root album handle.
+  ///
+  /// The empty-library UI state offers a "Recheck" action for exactly
+  /// the case this method exists for: the user initially had zero
+  /// photos (or had denied permission) and has since added photos or
+  /// granted access. Without this, `_getRootAlbum` would keep returning
+  /// its first, stale lookup for the lifetime of the service instance.
+  void invalidateCache() {
+    _rootAlbum = null;
+  }
+
   /// Executes the actual, irreversible native deletion for a batch of
   /// asset IDs. This is only ever invoked from the Trash screen's
   /// "Empty Trash" action — never automatically on swipe — matching the

@@ -8,7 +8,6 @@
 // the app where an irreversible destructive action can be triggered —
 // which is why it requires an explicit confirmation dialog before
 // calling `emptyTrash()`.
-import 'package:photo_manager_image_provider/photo_manager_image_provider.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:photo_manager/photo_manager.dart';
@@ -46,8 +45,7 @@ class _TrashScreenState extends ConsumerState<TrashScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child:
-                const Text('Delete', style: TextStyle(color: AppColors.delete)),
+            child: const Text('Delete', style: TextStyle(color: AppColors.delete)),
           ),
         ],
       ),
@@ -59,8 +57,7 @@ class _TrashScreenState extends ConsumerState<TrashScreen> {
 
     // The actual native deletion call — the only line in the entire UI
     // layer that results in bytes being removed from the device.
-    final freedMb =
-        await ref.read(swipeControllerProvider.notifier).emptyTrash();
+    final freedMb = await ref.read(swipeControllerProvider.notifier).emptyTrash();
 
     if (!mounted) return;
     setState(() => _isDeleting = false);
@@ -101,8 +98,7 @@ class _TrashScreenState extends ConsumerState<TrashScreen> {
                 Expanded(
                   child: GridView.builder(
                     padding: const EdgeInsets.symmetric(horizontal: 12),
-                    gridDelegate:
-                        const SliverGridDelegateWithFixedCrossAxisCount(
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                       crossAxisCount: 3,
                       crossAxisSpacing: 8,
                       mainAxisSpacing: 8,
@@ -122,8 +118,7 @@ class _TrashScreenState extends ConsumerState<TrashScreen> {
                   child: SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
-                      onPressed:
-                          _isDeleting ? null : () => _confirmAndEmpty(state),
+                      onPressed: _isDeleting ? null : () => _confirmAndEmpty(state),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.delete,
                       ),
@@ -162,11 +157,16 @@ class _TrashThumbnail extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          AssetEntityImage(
-            asset.entity,
-            isOriginal: false,
-            thumbnailSize: const ThumbnailSize.square(300),
-            fit: BoxFit.cover,
+          FutureBuilder(
+            future: asset.entity.thumbnailDataWithSize(
+              const ThumbnailSize.square(300),
+            ),
+            builder: (context, snapshot) {
+              if (!snapshot.hasData) {
+                return const ColoredBox(color: Colors.black12);
+              }
+              return Image.memory(snapshot.data!, fit: BoxFit.cover);
+            },
           ),
           Positioned(
             top: 4,
